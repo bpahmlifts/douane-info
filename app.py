@@ -34,19 +34,20 @@ with st.sidebar:
     st.caption("Gratis API-key aanmaken via aistudio.google.com")
 
 
-# Pydantic schema
+# Pydantic schema met 8-cijferige GN/HS-code specificatie
 class ProductEnrichment(BaseModel):
     hs_code: str = Field(
-        description="Meest waarschijnlijke 6-cijferige Harmonized System (HS) code"
+        description="De meest waarschijnlijke 8-cijferige EU Gecombineerde Nomenclatuur (GN / Combined Nomenclature) code, uitsluitend cijfers (bijv. 84313100 of 85171300)"
     )
     country_of_origin: str = Field(
-        description="2-letterige ISO landcode (bijv. CN, DE, NL) of 'UNKNOWN'"
+        description="2-letterige ISO landcode (bijv. CN, DE, NL, IT) of 'UNKNOWN'"
     )
     weight_kg: Optional[float] = Field(
-        default=None, description="Gewicht in kilogram (kg)"
+        default=None, 
+        description="Nettogewicht in kilogram (kg)"
     )
     confidence_notes: str = Field(
-        description="Korte motivering van de classificatie"
+        description="Korte motivering en toelichting op de 8-cijferige GN/HS-indeling"
     )
 
 
