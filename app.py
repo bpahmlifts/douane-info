@@ -84,7 +84,7 @@ import time
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
     Analyseer de onderstaande productomschrijving en bepaal:
-    1. De 6-cijferige HS code (Harmonized System).
+    1. De exacte 8-cijferige goederencode (eerste 6 cijfers HS + 2 cijfers GN-onderverdeling, bijv. 84313100).
     2. Land van oorsprong (ISO 3166-1 alpha-2, bijv. CN, NL, DE). Geef 'UNKNOWN' indien niet te herleiden.
     3. Nettogewicht in kilogram (kg).
     
