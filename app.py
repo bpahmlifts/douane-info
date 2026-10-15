@@ -1,41 +1,49 @@
-
 import io
 import re
 from typing import Optional
+from google import genai
 import pandas as pd
 from pydantic import BaseModel, Field
 import streamlit as st
-from openai import OpenAI
 
-# Paginainstellingen
 st.set_page_config(
-    page_title="Product Verrijkingstool", page_icon="📦", layout="centered"
+    page_title="Product Verrijkingstool (Gemini)",
+    page_icon="📦",
+    layout="centered",
 )
 
 st.title("📦 Douane & Product Data Verrijker")
 st.write(
-    "Haal automatisch de **HS-code**, het **land van herkomst** en het **gewicht (kg)** op uit productomschrijvingen."
+    "Haal automatisch de **HS-code**, het **land van herkomst** en het **gewicht (kg)** op met behulp van de gratis Gemini API."
 )
-
 
 # Sidebar voor instellingen
 with st.sidebar:
     st.header("⚙️ Instellingen")
-    api_key = st.text_input("OpenAI API Key:", type="password")
-    model_choice = st.selectbox("Model:", ["gpt-4o-mini", "gpt-4o"], index=0)
-    st.caption("Gebruik gpt-4o-mini voor snelle en voordelige verwerking.")
+    # Zoekt eerst in Streamlit Secrets, anders via invoerveld
+    default_key = st.secrets.get("GEMINI_API_KEY", "")
+    api_key = (
+        st.text_input(
+            "Gemini API Key:", value=default_key, type="password"
+        )
+        if not default_key
+        else default_key
+    )
+    if default_key:
+        st.success("API Key geladen via Secrets!")
+    st.caption("Gratis API-key aanmaken via aistudio.google.com")
 
 
-# Data structuur via Pydantic
+# Pydantic schema
 class ProductEnrichment(BaseModel):
     hs_code: str = Field(
-        description="Meest waarschijnlijke 6-cijferige HS code"
+        description="Meest waarschijnlijke 6-cijferige Harmonized System (HS) code"
     )
     country_of_origin: str = Field(
-        description="2-letterige ISO-code van het land van herkomst, of 'UNKNOWN'"
+        description="2-letterige ISO landcode (bijv. CN, DE, NL) of 'UNKNOWN'"
     )
     weight_kg: Optional[float] = Field(
-        default=None, description="Gewicht in kilogram (omgerekend)"
+        default=None, description="Gewicht in kilogram (kg)"
     )
     confidence_notes: str = Field(
         description="Korte motivering van de classificatie"
@@ -61,7 +69,7 @@ def extract_weight_regex(text: str) -> Optional[float]:
     return None
 
 
-def enrich_item(client: OpenAI, text: str, model: str) -> dict:
+def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
     Analyseer de onderstaande productomschrijving en bepaal:
     1. De 6-cijferige HS code (Harmonized System).
@@ -72,18 +80,15 @@ def enrich_item(client: OpenAI, text: str, model: str) -> dict:
     \"\"\"{text}\"\"\"
     """
     try:
-        response = client.beta.chat.completions.parse(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Je bent een douane- en logistiek data-expert.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format=ProductEnrichment,
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": ProductEnrichment,
+            },
         )
-        res = response.choices[0].message.parsed.model_dump()
+        res = ProductEnrichment.model_validate_json(response.text).model_dump()
         if res["weight_kg"] is None:
             res["weight_kg"] = extract_weight_regex(text)
         return res
@@ -96,31 +101,27 @@ def enrich_item(client: OpenAI, text: str, model: str) -> dict:
         }
 
 
-# Tabs: Enkelvoudige invoer vs Bulk Excel
-tab1, tab2 = st.tabs(
-    ["Single Product Check", "📁 Bulk Upload (Excel of CSV)"]
-)
+tab1, tab2 = st.tabs(["Single Product Check", "📁 Bulk Upload (Excel/CSV)"])
 
-# --- TAB 1: Enkel product ---
 with tab1:
     single_input = st.text_area(
-        "Productomschrijving of specificaties:",
-        placeholder="Bijv: Apple iPhone 15 Pro Max 256GB Titanium - Made in China - Gewicht: 221 g",
+        "Productomschrijving:",
+        placeholder="Bijv: Optische sensor 24V DC, Made in Germany, gewicht 140g",
     )
-    if st.button("Verrijk enkel product", type="primary"):
+    if st.button("Verrijk product", type="primary"):
         if not api_key:
-            st.error("Vul eerst je OpenAI API Key in het menu links in.")
+            st.error("Vul eerst een Gemini API Key in.")
         elif not single_input.strip():
             st.warning("Vul een productomschrijving in.")
         else:
-            client = OpenAI(api_key=api_key)
-            with st.spinner("Gegevens opzoeken..."):
-                result = enrich_item(client, single_input, model_choice)
+            client = genai.Client(api_key=api_key)
+            with st.spinner("Classificeren via Gemini..."):
+                result = enrich_item(client, single_input)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("HS Code", result["hs_code"])
-            col2.metric("Land van herkomst", result["country_of_origin"])
-            col3.metric(
+            c1, c2, c3 = st.columns(3)
+            c1.metric("HS Code", result["hs_code"])
+            c2.metric("Herkomstland", result["country_of_origin"])
+            c3.metric(
                 "Gewicht",
                 f"{result['weight_kg']} kg"
                 if result["weight_kg"]
@@ -128,10 +129,9 @@ with tab1:
             )
             st.info(f"**Toelichting:** {result['confidence_notes']}")
 
-# --- TAB 2: Bulk upload ---
 with tab2:
     uploaded_file = st.file_uploader(
-        "Upload Excel- of CSV-bestand", type=["xlsx", "csv"]
+        "Upload bestand", type=["xlsx", "csv"]
     )
     if uploaded_file:
         df = (
@@ -139,18 +139,18 @@ with tab2:
             if uploaded_file.name.endswith(".csv")
             else pd.read_excel(uploaded_file)
         )
-        st.write("Voorvertoning van je bestand:")
+        st.write("Voorvertoning:")
         st.dataframe(df.head(3))
 
         column_to_read = st.selectbox(
-            "Selecteer de kolom met productomschrijvingen:", df.columns
+            "Kolom met omschrijvingen:", df.columns
         )
 
         if st.button("Start Bulk Verwerking", type="primary"):
             if not api_key:
-                st.error("Vul eerst je OpenAI API Key in het menu links in.")
+                st.error("Geen API Key ingesteld.")
             else:
-                client = OpenAI(api_key=api_key)
+                client = genai.Client(api_key=api_key)
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
@@ -159,8 +159,8 @@ with tab2:
 
                 for idx, row in df.iterrows():
                     val = str(row[column_to_read])
-                    status_text.text(f"Bezig met regel {idx + 1} van {total}...")
-                    res = enrich_item(client, val, model_choice)
+                    status_text.text(f"Regel {idx + 1} van {total}...")
+                    res = enrich_item(client, val)
 
                     hs_codes.append(res["hs_code"])
                     origins.append(res["country_of_origin"])
@@ -174,10 +174,9 @@ with tab2:
                 df["Weight_KG"] = weights
                 df["Notes"] = notes
 
-                status_text.success("Klaar!")
+                status_text.success("Verwerking voltooid!")
                 st.dataframe(df.head())
 
-                # Download knop
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                     df.to_excel(writer, index=False)
@@ -189,3 +188,4 @@ with tab2:
                     file_name="producten_verrijkt.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+                
