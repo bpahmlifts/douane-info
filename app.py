@@ -83,13 +83,18 @@ import time
 
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
-    Analyseer de onderstaande productomschrijving en bepaal:
-    1. De exacte 8-cijferige goederencode (eerste 6 cijfers HS + 2 cijfers GN-onderverdeling, bijv. 84313100).
-    2. Land van oorsprong (ISO 3166-1 alpha-2, bijv. CN, NL, DE). Geef 'UNKNOWN' indien niet te herleiden.
-    3. Nettogewicht in kilogram (kg).
-    
-    Product:
+    Je bent een douane- en logistiek data-expert. Analyseer het onderstaande product:
     \"\"\"{text}\"\"\"
+
+    Bepaal de volgende gegevens:
+    1. HS/GN-code: De exacte 8-cijferige Europese goederencode (bijv. 85171300 voor smartphones).
+    2. Land van herkomst (Country of Origin): 
+       - Als het land in de tekst staat, neem dat over.
+       - Staat het er NIET in, gebruik dan je algemene kennis over dit specifieke product of merk om het meest gangbare productieland te bepalen (bijvoorbeeld 'CN' voor iPhones die voornamelijk in China/India worden geassembleerd). Gebruik alleen 'UNKNOWN' als het volstrekt onbekend is.
+    3. Gewicht (kg):
+       - Als het gewicht in de tekst staat, reken dit om naar kg.
+       - Staat het er NIET in, schat of benader dan het officiële nettogewicht van dit specifieke product op basis van je productkennis (bijv. ca. 0.200 kg voor een moderne Pro smartphone).
+    4. Toelichting: Geef een korte toelichting op de keuzes en vermeld of het gewicht/land gebaseerd is op de tekst of op algemene specificaties.
     """
     
     # Snellere en minder belaste modellen eerst
