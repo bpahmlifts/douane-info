@@ -78,6 +78,8 @@ import time
 
 import time
 
+import time
+
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
     Analyseer de onderstaande productomschrijving en bepaal:
@@ -89,45 +91,33 @@ def enrich_item(client: genai.Client, text: str) -> dict:
     \"\"\"{text}\"\"\"
     """
     
-    # Actuele ondersteunde modellen voor nieuwe projecten
+    # Snellere en minder belaste modellen eerst
     models_to_try = [
-        "gemini-3.8-flash",
         "gemini-3.5-flash-lite",
-        "gemini-3.0-flash"
+        "gemini-3.8-flash",
     ]
     
     last_error = ""
 
     for model_name in models_to_try:
-        # 3 pogingen per model bij tijdelijke overbelasting (503)
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": ProductEnrichment,
-                    },
-                )
-                res = ProductEnrichment.model_validate_json(response.text).model_dump()
-                if res["weight_kg"] is None:
-                    res["weight_kg"] = extract_weight_regex(text)
-                return res
-            except Exception as e:
-                err_msg = str(e)
-                last_error = f"{model_name}: {err_msg}"
-                
-                # Als het model 404 geeft, sla verdere pogingen over en ga naar volgend model
-                if "404" in err_msg:
-                    break
-                    
-                # Als het model 503 (high demand) geeft, wacht kort en probeer opnieuw
-                if "503" in err_msg or "UNAVAILABLE" in err_msg:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                
-                time.sleep(1)
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": ProductEnrichment,
+                },
+            )
+            res = ProductEnrichment.model_validate_json(response.text).model_dump()
+            if res["weight_kg"] is None:
+                res["weight_kg"] = extract_weight_regex(text)
+            return res
+        except Exception as e:
+            last_error = f"{model_name}: {str(e)[:100]}"
+            # Direct door naar het volgende model zonder lange pauzes
+            time.sleep(0.5)
+            continue
             
     return {
         "hs_code": "ERROR",
