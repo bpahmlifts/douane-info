@@ -69,6 +69,9 @@ def extract_weight_regex(text: str) -> Optional[float]:
     return None
 
 
+import time
+
+
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
     Analyseer de onderstaande productomschrijving en bepaal:
@@ -79,28 +82,46 @@ def enrich_item(client: genai.Client, text: str) -> dict:
     Product:
     \"\"\"{text}\"\"\"
     """
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": ProductEnrichment,
-            },
-        )
-        res = ProductEnrichment.model_validate_json(response.text).model_dump()
-        if res["weight_kg"] is None:
-            res["weight_kg"] = extract_weight_regex(text)
-        return res
-    except Exception as e:
-        return {
-            "hs_code": "ERROR",
-            "country_of_origin": "ERROR",
-            "weight_kg": None,
-            "confidence_notes": str(e),
-        }
 
+    # Modellen die op volgorde geprobeerd worden bij drukte
+    models_to_try = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-3.8-flash",
+    ]
 
+    for model_name in models_to_try:
+        for attempt in range(2):  # 2 pogingen per model
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": ProductEnrichment,
+                    },
+                )
+                res = ProductEnrichment.model_validate_json(
+                    response.text
+                ).model_dump()
+                if res["weight_kg"] is None:
+                    res["weight_kg"] = extract_weight_regex(text)
+                return res
+            except Exception as e:
+                err_msg = str(e)
+                # Bij overbelasting (503) even kort pauzeren en opnieuw proberen
+                if "503" in err_msg or "UNAVAILABLE" in err_msg:
+                    time.sleep(1.5)
+                    continue
+                # Bij 404 direct door naar het volgende model in de lijst
+                break
+
+    return {
+        "hs_code": "ERROR",
+        "country_of_origin": "ERROR",
+        "weight_kg": None,
+        "confidence_notes": "Modellen tijdelijk overbelast. Probeer het over enkele ogenblikken opnieuw.",
+    }
 tab1, tab2 = st.tabs(["Single Product Check", "📁 Bulk Upload (Excel/CSV)"])
 
 with tab1:
