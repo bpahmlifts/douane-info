@@ -1,10 +1,12 @@
 import io
 import re
+import time
 from typing import Optional
-from google import genai
+
 import pandas as pd
-from pydantic import BaseModel, Field
 import streamlit as st
+from google import genai
+from pydantic import BaseModel, Field
 
 st.set_page_config(
     page_title="Product Verrijkingstool (Gemini)",
@@ -15,6 +17,13 @@ st.set_page_config(
 st.title("📦 Douane & Product Data Verrijker")
 st.write(
     "Haal automatisch de **HS-code**, het **land van herkomst** en het **gewicht (kg)** op met behulp van de gratis Gemini API."
+)
+st.warning(
+    "Alle resultaten zijn een **AI-voorstel**, geen officiële classificatie. "
+    "Controleer HS-codes altijd in de EU TARIC-database of bij de douane. "
+    "Het land van herkomst is een **indicatie** op basis van merk en producttype; "
+    "het land van de leverancier is niet hetzelfde als het land van oorsprong. "
+    "Vul bij twijfel de herkomst in uit de leveranciersfactuur of het oorsprongscertificaat."
 )
 
 # Sidebar voor instellingen
@@ -43,7 +52,7 @@ class ProductEnrichment(BaseModel):
         description="2-letterige ISO landcode (bijv. CN, DE, NL, IT) of 'UNKNOWN'"
     )
     weight_kg: Optional[float] = Field(
-        default=None, 
+        default=None,
         description="Nettogewicht in kilogram (kg)"
     )
     confidence_notes: str = Field(
@@ -70,16 +79,24 @@ def extract_weight_regex(text: str) -> Optional[float]:
     return None
 
 
-import time
+def clean(value) -> str:
+    """Maak van een celwaarde een nette string; lege cellen en NaN worden ''."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
 
 
-import time
+def final_origin(ai_origin: str, own_origin: str):
+    """Een eigen opgave (bijv. van de leveranciersfactuur) wint van de AI-indicatie."""
+    if own_origin:
+        return own_origin, "Eigen opgave"
+    return ai_origin, "AI-indicatie"
 
-import time
-
-import time
-
-import time
 
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
@@ -88,21 +105,22 @@ def enrich_item(client: genai.Client, text: str) -> dict:
 
     Bepaal de volgende gegevens:
     1. HS/GN-code: De exacte 8-cijferige Europese goederencode (bijv. 85171300 voor smartphones).
-    2. Land van herkomst (Country of Origin): 
+    2. Land van herkomst (Country of Origin):
        - Als het land in de tekst staat, neem dat over.
        - Staat het er NIET in, gebruik dan je algemene kennis over dit specifieke product of merk om het meest gangbare productieland te bepalen (bijvoorbeeld 'CN' voor iPhones die voornamelijk in China/India worden geassembleerd). Gebruik alleen 'UNKNOWN' als het volstrekt onbekend is.
+       - Dit is een indicatie: het gaat om het land waar het product is gemaakt, niet om het land van een leverancier of doorverkoper.
     3. Gewicht (kg):
        - Als het gewicht in de tekst staat, reken dit om naar kg.
        - Staat het er NIET in, schat of benader dan het officiële nettogewicht van dit specifieke product op basis van je productkennis (bijv. ca. 0.200 kg voor een moderne Pro smartphone).
     4. Toelichting: Geef een korte toelichting op de keuzes en vermeld of het gewicht/land gebaseerd is op de tekst of op algemene specificaties.
     """
-    
+
     # Snellere en minder belaste modellen eerst
     models_to_try = [
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
     ]
-    
+
     last_error = ""
 
     for model_name in models_to_try:
@@ -124,19 +142,28 @@ def enrich_item(client: genai.Client, text: str) -> dict:
             # Direct door naar het volgende model zonder lange pauzes
             time.sleep(0.5)
             continue
-            
+
     return {
         "hs_code": "ERROR",
         "country_of_origin": "ERROR",
         "weight_kg": None,
         "confidence_notes": f"Fout bij verwerken: {last_error}"
     }
+
+
 tab1, tab2 = st.tabs(["Single Product Check", "📁 Bulk Upload (Excel/CSV)"])
 
 with tab1:
     single_input = st.text_area(
         "Productomschrijving:",
         placeholder="Bijv: Optische sensor 24V DC, Made in Germany, gewicht 140g",
+    )
+    col_a, col_b = st.columns(2)
+    single_supplier = col_a.text_input("Leverancier (optioneel):")
+    single_own_origin = col_b.text_input(
+        "Eigen herkomst (optioneel):",
+        placeholder="ISO-code, bijv. DE",
+        help="Staat deze ingevuld (bijv. van de leveranciersfactuur), dan wint die van de AI-indicatie.",
     )
     if st.button("Verrijk product", type="primary"):
         if not api_key:
@@ -148,15 +175,22 @@ with tab1:
             with st.spinner("Classificeren via Gemini..."):
                 result = enrich_item(client, single_input)
 
+            origin, origin_source = final_origin(
+                result["country_of_origin"], single_own_origin.strip()
+            )
+
             c1, c2, c3 = st.columns(3)
             c1.metric("HS Code", result["hs_code"])
-            c2.metric("Herkomstland", result["country_of_origin"])
+            c2.metric("Herkomstland", origin, help=f"Bron: {origin_source}")
             c3.metric(
                 "Gewicht",
                 f"{result['weight_kg']} kg"
                 if result["weight_kg"]
                 else "Onbekend",
             )
+            if single_supplier.strip():
+                st.caption(f"Leverancier: {single_supplier.strip()}")
+            st.caption(f"Herkomst: {origin_source}")
             st.info(f"**Toelichting:** {result['confidence_notes']}")
 
 with tab2:
@@ -172,8 +206,19 @@ with tab2:
         st.write("Voorvertoning:")
         st.dataframe(df.head(3))
 
+        NONE_OPTION = "(geen)"
+        optional_columns = [NONE_OPTION] + list(df.columns)
+
         column_to_read = st.selectbox(
             "Kolom met omschrijvingen:", df.columns
+        )
+        supplier_column = st.selectbox(
+            "Kolom met leverancier (optioneel):", optional_columns
+        )
+        own_origin_column = st.selectbox(
+            "Kolom met eigen herkomst, bijv. uit leveranciersfactuur (optioneel):",
+            optional_columns,
+            help="Waar deze kolom is ingevuld, wint die van de AI-indicatie.",
         )
 
         if st.button("Start Bulk Verwerking", type="primary"):
@@ -184,25 +229,39 @@ with tab2:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                hs_codes, origins, weights, notes = [], [], [], []
+                hs_codes, ai_origins, final_origins, origin_sources = [], [], [], []
+                weights, notes = [], []
                 total = len(df)
 
-                for idx, row in df.iterrows():
+                for n, (_, row) in enumerate(df.iterrows(), start=1):
                     val = str(row[column_to_read])
-                    status_text.text(f"Regel {idx + 1} van {total}...")
+                    status_text.text(f"Regel {n} van {total}...")
                     res = enrich_item(client, val)
 
+                    own_origin = (
+                        clean(row[own_origin_column])
+                        if own_origin_column != NONE_OPTION
+                        else ""
+                    )
+                    origin, source = final_origin(res["country_of_origin"], own_origin)
+
                     hs_codes.append(res["hs_code"])
-                    origins.append(res["country_of_origin"])
+                    ai_origins.append(res["country_of_origin"])
+                    final_origins.append(origin)
+                    origin_sources.append(source)
                     weights.append(res["weight_kg"])
                     notes.append(res["confidence_notes"])
 
-                    progress_bar.progress((idx + 1) / total)
+                    progress_bar.progress(n / total)
 
                 df["HS_Code"] = hs_codes
-                df["Country_of_Origin"] = origins
+                df["Country_of_Origin_AI"] = ai_origins
+                df["Country_of_Origin"] = final_origins
+                df["Origin_Source"] = origin_sources
                 df["Weight_KG"] = weights
                 df["Notes"] = notes
+                if supplier_column != NONE_OPTION:
+                    df["Supplier"] = [clean(v) for v in df[supplier_column]]
 
                 status_text.success("Verwerking voltooid!")
                 st.dataframe(df.head())
@@ -218,4 +277,3 @@ with tab2:
                     file_name="producten_verrijkt.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                
