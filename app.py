@@ -23,7 +23,7 @@ st.warning(
     "Controleer HS-codes altijd in de EU TARIC-database of bij de douane. "
     "Het land van herkomst is een **indicatie** op basis van merk en producttype; "
     "het land van de leverancier is niet hetzelfde als het land van oorsprong. "
-    "Vul bij twijfel de herkomst in uit de leveranciersfactuur of het oorsprongscertificaat."
+    "Controleer de herkomst bij twijfel aan de hand van de leveranciersfactuur of het oorsprongscertificaat."
 )
 
 # Sidebar voor instellingen
@@ -91,13 +91,6 @@ def clean(value) -> str:
     return str(value).strip()
 
 
-def final_origin(ai_origin: str, own_origin: str):
-    """Een eigen opgave (bijv. van de leveranciersfactuur) wint van de AI-indicatie."""
-    if own_origin:
-        return own_origin, "Eigen opgave"
-    return ai_origin, "AI-indicatie"
-
-
 def enrich_item(client: genai.Client, text: str) -> dict:
     prompt = f"""
     Je bent een douane- en logistiek data-expert. Analyseer het onderstaande product:
@@ -158,13 +151,7 @@ with tab1:
         "Productomschrijving:",
         placeholder="Bijv: Optische sensor 24V DC, Made in Germany, gewicht 140g",
     )
-    col_a, col_b = st.columns(2)
-    single_supplier = col_a.text_input("Leverancier (optioneel):")
-    single_own_origin = col_b.text_input(
-        "Eigen herkomst (optioneel):",
-        placeholder="ISO-code, bijv. DE",
-        help="Staat deze ingevuld (bijv. van de leveranciersfactuur), dan wint die van de AI-indicatie.",
-    )
+    single_supplier = st.text_input("Leverancier (optioneel):")
     if st.button("Verrijk product", type="primary"):
         if not api_key:
             st.error("Vul eerst een Gemini API Key in.")
@@ -175,13 +162,13 @@ with tab1:
             with st.spinner("Classificeren via Gemini..."):
                 result = enrich_item(client, single_input)
 
-            origin, origin_source = final_origin(
-                result["country_of_origin"], single_own_origin.strip()
-            )
-
             c1, c2, c3 = st.columns(3)
             c1.metric("HS Code", result["hs_code"])
-            c2.metric("Herkomstland", origin, help=f"Bron: {origin_source}")
+            c2.metric(
+                "Herkomstland",
+                result["country_of_origin"],
+                help="Indicatie van de AI, geen officiële opgave.",
+            )
             c3.metric(
                 "Gewicht",
                 f"{result['weight_kg']} kg"
@@ -190,7 +177,6 @@ with tab1:
             )
             if single_supplier.strip():
                 st.caption(f"Leverancier: {single_supplier.strip()}")
-            st.caption(f"Herkomst: {origin_source}")
             st.info(f"**Toelichting:** {result['confidence_notes']}")
 
 with tab2:
@@ -215,11 +201,6 @@ with tab2:
         supplier_column = st.selectbox(
             "Kolom met leverancier (optioneel):", optional_columns
         )
-        own_origin_column = st.selectbox(
-            "Kolom met eigen herkomst, bijv. uit leveranciersfactuur (optioneel):",
-            optional_columns,
-            help="Waar deze kolom is ingevuld, wint die van de AI-indicatie.",
-        )
 
         if st.button("Start Bulk Verwerking", type="primary"):
             if not api_key:
@@ -229,8 +210,7 @@ with tab2:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                hs_codes, ai_origins, final_origins, origin_sources = [], [], [], []
-                weights, notes = [], []
+                hs_codes, origins, weights, notes = [], [], [], []
                 total = len(df)
 
                 for n, (_, row) in enumerate(df.iterrows(), start=1):
@@ -238,26 +218,15 @@ with tab2:
                     status_text.text(f"Regel {n} van {total}...")
                     res = enrich_item(client, val)
 
-                    own_origin = (
-                        clean(row[own_origin_column])
-                        if own_origin_column != NONE_OPTION
-                        else ""
-                    )
-                    origin, source = final_origin(res["country_of_origin"], own_origin)
-
                     hs_codes.append(res["hs_code"])
-                    ai_origins.append(res["country_of_origin"])
-                    final_origins.append(origin)
-                    origin_sources.append(source)
+                    origins.append(res["country_of_origin"])
                     weights.append(res["weight_kg"])
                     notes.append(res["confidence_notes"])
 
                     progress_bar.progress(n / total)
 
                 df["HS_Code"] = hs_codes
-                df["Country_of_Origin_AI"] = ai_origins
-                df["Country_of_Origin"] = final_origins
-                df["Origin_Source"] = origin_sources
+                df["Country_of_Origin"] = origins
                 df["Weight_KG"] = weights
                 df["Notes"] = notes
                 if supplier_column != NONE_OPTION:
